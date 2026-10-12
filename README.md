@@ -43,7 +43,9 @@ Copy the DLLs from `bin/` next to your executable. The driver DLL imports the Op
 
 `vcruntime140.dll` is the only thing the DLLs need that Windows 10 and 11 do not include. It normally comes with the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist), and the copy in the package makes the DLLs load on machines that do not have it. Every Visual Studio since 2015 uses this file name, and a newer runtime runs what an older compiler built: leave the file out if you install the redistributable (14.44 or later) with your application, and do not replace a newer `vcruntime140.dll` with it.
 
-For C and C++ projects, add the two directories under `include/` to the include path and link the two import libraries from `lib/`, or add the extracted folder to `CMAKE_PREFIX_PATH`.
+For C and C++ projects, add the two directories under `include/` to the include path and link the two import libraries from `lib/`. With CMake, add the extracted folder to `CMAKE_PREFIX_PATH`, call `find_package(mongoc)` and link `mongoc::mongoc`; on 1.x, upstream's `mongoc-1.0` package and its `mongo::mongoc_shared` target work as well.
+
+The CMake files are upstream's, with one change: they do not look for OpenSSL. As upstream writes them, every project that links the driver must also find the OpenSSL headers and import libraries, which a program that only loads the DLLs does not use and which the package does not contain. A project that calls OpenSSL itself brings its own.
 
 ## Linux
 
@@ -94,8 +96,9 @@ gh attestation verify libmongoc-1.0.so.0 --repo jamalofski/libmongoc-binaries
 1. It downloads the mongo-c-driver release and checks its signature against the [MongoDB C Driver release key](keys/mongo-c-driver.asc) (`6DB5 5D82 23FF 44E4 9DCB 9813 44E7 6C05 65AB C463`).
 2. It builds OpenSSL from the latest 3.5 LTS release, after checking the tarball signature against the [OpenSSL signing certificate](keys/openssl.asc) (`B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40`), with OpenSSL's default Windows directories.
 3. It builds libbson and libmongoc with `ENABLE_SSL=OPENSSL`, `ENABLE_SASL=SSPI`, `ENABLE_SRV=ON`, `ENABLE_ZLIB=BUNDLED`, `ENABLE_MONGODB_AWS_AUTH=ON`, `ENABLE_SNAPPY=OFF`, `ENABLE_ZSTD=OFF` and `ENABLE_CLIENT_SIDE_ENCRYPTION=OFF`. On 1.x it adds `BSON_OUTPUT_BASENAME=libbson` and `MONGOC_OUTPUT_BASENAME=libmongoc`.
-4. It adds `vcruntime140.dll` from the runner's Visual Studio, then checks the architecture and version of every DLL, and that each dependency is either in the package or part of Windows.
+4. It adds `vcruntime140.dll` from the runner's Visual Studio and takes the OpenSSL lookup out of the CMake files, then checks the architecture and version of every DLL, and that each dependency is either in the package or part of Windows.
 5. It compiles a [smoke test](test/smoke.c) and runs it with only the package and Windows on the DLL search path, against a local `mongod` that requires TLS and a client certificate.
+6. It builds the smoke test once more [through the CMake files](test/CMakeLists.txt) of the package, with CMake forbidden to look for OpenSSL.
 
 The same workflow builds the Linux libraries on an `ubuntu-24.04` runner, from the same verified tarball and with the same options, except `ENABLE_SASL=CYRUS` and `ENABLE_ZLIB=SYSTEM`. They link to the OpenSSL of the system, and libmongoc gets an `$ORIGIN` run path. The workflow checks that they depend on nothing but glibc, OpenSSL 3, Cyrus SASL and zlib, then runs the smoke test in fresh `ubuntu:24.04` and `ubuntu:26.04` containers that only have these, against a `mongod` container that requires TLS and a client certificate.
 

@@ -261,6 +261,21 @@ jobs:
               param($lib) if (Test-Path "$pkg\lib\$lib.dll.lib") { "$lib.dll" } else { "$lib" } })
             Set-Content $pc.FullName $text -NoNewline
           }
+          # The CMake files make every project that links the driver look for OpenSSL and link its import
+          # libraries, which the package does not have: find_package() fails, or takes an OpenSSL of the
+          # machine, of any version. A program that links the driver DLLs needs none, so this is taken out:
+          # no TLS package to find, which upstream writes as NO in a Secure Channel build, and no OpenSSL
+          # targets to link. The files are in lib\cmake\mongoc-1.0 on 1.x, lib\cmake\mongoc-<version> on 2.x.
+          $cmake = @(Get-Item "$pkg\lib\cmake\*\mongoc-targets.cmake").DirectoryName
+          $edits = @{ File = 'mongoc*config.cmake'; Old = 'tls_package [[OpenSSL]])'; New = 'tls_package [[NO]])' },
+                   @{ File = 'mongoc-targets.cmake'; Old = 'OpenSSL::SSL;OpenSSL::Crypto;'; New = '' }
+          foreach ($edit in $edits) {
+            $file = @(Get-Item "$cmake\$($edit.File)")
+            if ($file.Count -ne 1) { throw "Expected one $($edit.File) in lib\cmake, found $($file.Count)" }
+            $text = Get-Content $file[0].FullName -Raw
+            if (($text -csplit [regex]::Escape($edit.Old)).Count -ne 2) { throw "Expected one '$($edit.Old)' in $($file[0].Name)" }
+            Set-Content $file[0].FullName $text.Replace($edit.Old, $edit.New) -NoNewline
+          }
           Write-Host 'Installed by mongo-c-driver:'
           Get-ChildItem stage -Recurse -File | ForEach-Object { '  ' + $_.FullName.Substring((Resolve-Path stage).Path.Length + 1) }
 
@@ -351,6 +366,26 @@ jobs:
             Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
             Pop-Location
           }
+
+      - name: Smoke test (CMake package)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $pkg = (Resolve-Path "pkg\$env:PKG").Path -replace '\\', '/'
+          $build = Join-Path $env:RUNNER_TEMP 'smoke-cmake'
+          # As the README says: the extracted folder in CMAKE_PREFIX_PATH and nothing else. The runner has an
+          # OpenSSL that CMake finds, 64-bit only, and a user's machine may have none: the package must not
+          # ask for one, so CMake is told to refuse the search. Nothing reads that setting when the package
+          # is right, which CMake would report as a warning.
+          cmake -S test -B $build -G Ninja --no-warn-unused-cli -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$pkg" `
+            -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+          if (-not (Select-String -Path "$build\CMakeCache.txt" -SimpleMatch "mongoc_DIR:PATH=$pkg/lib/cmake/" -Quiet)) {
+            throw "CMake did not take the mongoc package from $pkg"
+          }
+          cmake --build $build
+          Copy-Item "$pkg/bin/*.dll" $build
+          # Only the package and Windows on the DLL search path, as above.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          & "$build\smoke.exe" $env:MONGOC_VERSION
 
       - name: Zip
         run: |
