@@ -376,7 +376,7 @@ jobs:
           # OpenSSL that CMake finds, 64-bit only, and a user's machine may have none: the package must not
           # ask for one, so CMake is told to refuse the search. Nothing reads that setting when the package
           # is right, which CMake would report as a warning.
-          cmake -S test -B $build -G Ninja --no-warn-unused-cli -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$pkg" `
+          cmake -S test -B $build -G Ninja -Wno-unused-cli -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$pkg" `
             -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
           if (-not (Select-String -Path "$build\CMakeCache.txt" -SimpleMatch "mongoc_DIR:PATH=$pkg/lib/cmake/" -Quiet)) {
             throw "CMake did not take the mongoc package from $pkg"
