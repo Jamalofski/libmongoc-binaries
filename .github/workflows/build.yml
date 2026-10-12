@@ -106,12 +106,9 @@ jobs:
           }
           if ($matches[1] -eq '1') {
             # 1.x keeps the lib-prefixed names that Delphi FireDAC loads (upstream dropped them in 1.16).
-            $names = 'BSON_BASENAME=libbson', 'MONGOC_BASENAME=libmongoc', 'BSON_NAME=libbson-1.0', 'MONGOC_NAME=libmongoc-1.0',
-                     'BSON_IMPLIB=libbson-1.0.lib', 'MONGOC_IMPLIB=libmongoc-1.0.lib'
+            $names = 'BSON_BASENAME=libbson', 'MONGOC_BASENAME=libmongoc', 'BSON_NAME=libbson-1.0', 'MONGOC_NAME=libmongoc-1.0'
           } else {
-            # 2.x names the import libraries *.dll.lib, keeping *.lib for the static libraries.
-            $names = 'BSON_BASENAME=bson', 'MONGOC_BASENAME=mongoc', 'BSON_NAME=bson2', 'MONGOC_NAME=mongoc2',
-                     'BSON_IMPLIB=bson2.dll.lib', 'MONGOC_IMPLIB=mongoc2.dll.lib'
+            $names = 'BSON_BASENAME=bson', 'MONGOC_BASENAME=mongoc', 'BSON_NAME=bson2', 'MONGOC_NAME=mongoc2'
           }
           $names >> $env:GITHUB_ENV
 
@@ -254,6 +251,16 @@ jobs:
           if ($notices.Count -ne 2) { throw 'COPYING and THIRD_PARTY_NOTICES not found in the mongo-c-driver install' }
           $notices | Copy-Item -Destination "$pkg\licenses\mongo-c-driver"
           Copy-Item "$env:OPENSSL_PREFIX\LICENSE.txt" "$pkg\licenses\openssl"
+          # The pkg-config files have the install prefix of this job, "stage": make them follow the package.
+          # 2.x also asks for -lbson2 and -lmongoc2, which a linker reads as bson2.lib and mongoc2.lib, where
+          # its import libraries are bson2.dll.lib and mongoc2.dll.lib: such a name gets its .dll.
+          # CMake wrote the files with CRLF line endings: they get the LF they have on every other platform.
+          foreach ($pc in Get-ChildItem "$pkg\lib\pkgconfig" -Filter *.pc) {
+            $text = (Get-Content $pc.FullName -Raw) -replace "`r`n", "`n" -replace '(?m)^prefix=.*$', 'prefix=$${pcfiledir}/../..'
+            $text = [regex]::Replace($text, '(?m)(?<=^Libs:.* -l)\S+', {
+              param($lib) if (Test-Path "$pkg\lib\$lib.dll.lib") { "$lib.dll" } else { "$lib" } })
+            Set-Content $pc.FullName $text -NoNewline
+          }
           Write-Host 'Installed by mongo-c-driver:'
           Get-ChildItem stage -Recurse -File | ForEach-Object { '  ' + $_.FullName.Substring((Resolve-Path stage).Path.Length + 1) }
 
@@ -292,6 +299,10 @@ jobs:
           if ([version]::new($runtime.FileMajorPart, $runtime.FileMinorPart) -lt [version]$env:MSVC_TOOLSET) {
             throw "vcruntime140.dll $($runtime.FileVersion) is older than the MSVC $env:MSVC_TOOLSET toolset"
           }
+          # The pkg-config files may only name directories of the package: a drive letter (not the colon of
+          # a URL) would be a path of this runner.
+          $absolute = Select-String -Path "pkg\$env:PKG\lib\pkgconfig\*.pc" -Pattern '[A-Za-z]:[\\/](?!/)'
+          if ($absolute) { throw "Absolute path in a pkg-config file: $absolute" }
 
       - name: Create TLS test certificates
         shell: bash
@@ -305,15 +316,15 @@ jobs:
           $smoke = Join-Path $env:RUNNER_TEMP 'smoke'
           New-Item -ItemType Directory $smoke -Force | Out-Null
           Copy-Item "$pkg\bin\*.dll" $smoke
-          # include\libbson-1.0 on 1.x, include\bson-<version> on 2.x
-          $includes = foreach ($header in 'bson\bson.h', 'mongoc\mongoc.h') {
-            $dir = Get-ChildItem "$pkg\include" -Directory | Where-Object { Test-Path (Join-Path $_.FullName $header) }
-            if (@($dir).Count -ne 1) { throw "Expected one include directory with $header" }
-            "/I$($dir.FullName)"
-          }
+          # Compiled through the pkg-config files of the package, which tests them as well. The runner has
+          # the pkg-config of Strawberry Perl, without --msvc-syntax: -L and -l are turned here into what
+          # link expects, /LIBPATH: and the file name of the import library.
+          $env:PKG_CONFIG_PATH = "$pkg\lib\pkgconfig"
+          $cflags = -split (pkg-config --cflags $env:MONGOC_NAME)
+          $libs = (-split (pkg-config --libs $env:MONGOC_NAME)) -creplace '^-L', '/LIBPATH:' -creplace '^-l(.+)', '$1.lib'
+          Write-Host "$((Get-Command pkg-config).Source) $env:MONGOC_NAME -> $cflags $libs"
           Push-Location $smoke
-          cl /nologo /W3 /std:c11 @includes "$env:GITHUB_WORKSPACE\test\smoke.c" `
-            /link "/LIBPATH:$pkg\lib" $env:MONGOC_IMPLIB $env:BSON_IMPLIB
+          cl /nologo /W3 /std:c11 @cflags "$env:GITHUB_WORKSPACE\test\smoke.c" /link @libs
 
           $mongod = Get-ChildItem 'C:\Program Files\MongoDB\Server\*\bin\mongod.exe' | Sort-Object FullName | Select-Object -Last 1
           if (-not $mongod) { throw 'mongod was not found on the runner' }
