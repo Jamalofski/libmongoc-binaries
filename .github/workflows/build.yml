@@ -433,10 +433,7 @@ jobs:
           fi
 
       - name: Install the OpenSSL, Cyrus SASL and zlib headers
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libssl-dev libsasl2-dev zlib1g-dev pkg-config
+        run: sudo bash test/apt-install.sh libssl-dev libsasl2-dev zlib1g-dev pkg-config
 
       - name: Download and verify mongo-c-driver ${{ inputs.mongoc-version }}
         run: |
@@ -565,10 +562,10 @@ jobs:
             echo "$image"
             docker run --rm --network host \
               --volume "$pkg:/pkg:ro" --volume "$PWD/smoke:/smoke:ro" --volume "$tls:/tls:ro" \
-              --env DEBIAN_FRONTEND=noninteractive --env BSON_LIB --env MONGOC_LIB --env MONGOC_VERSION --env "URI=$uri" \
+              --volume "$PWD/test:/test:ro" \
+              --env BSON_LIB --env MONGOC_LIB --env MONGOC_VERSION --env "URI=$uri" \
               "$image" bash -euo pipefail -c '
-                apt-get update -qq
-                apt-get install -y -qq --no-install-recommends libssl3t64 libsasl2-2 > /dev/null
+                bash /test/apt-install.sh libssl3t64 libsasl2-2
                 # Without LD_LIBRARY_PATH, as an application that loads libmongoc by its path: libbson
                 # has to come from the run path of libmongoc.
                 ldd "/pkg/lib/lib$MONGOC_LIB.so" | tee /tmp/ldd.txt
