@@ -477,7 +477,12 @@ jobs:
           set -euo pipefail
           pkg="pkg/$PKG"
           mkdir -p "$pkg/licenses/mongo-c-driver"
-          cp -a stage/include stage/lib "$pkg"
+          cp -a stage/include "$pkg"
+          # -L: each library is installed as one file and two symbolic links, for its other names. They all
+          # become plain files here, since Windows tools fail on the links or extract them as empty files,
+          # and the archive often goes through Windows on its way to a Linux machine. Not -a, which would
+          # make hard links of them: three separate copies behave the same whatever extracts them.
+          cp -rLp stage/lib "$pkg"
           # share/mongo-c-driver on 1.x, share/mongo-c-driver/<version> on 2.x
           mapfile -t notices < <(find stage/share/mongo-c-driver -name COPYING -o -name THIRD_PARTY_NOTICES)
           if [ "${#notices[@]}" -ne 2 ]; then
@@ -507,7 +512,7 @@ jobs:
               echo "::error::$name is not an x86-64 library"
               exit 1
             fi
-            # The dynamic linker looks for this name, which is a link to the library.
+            # The dynamic linker looks for this name, one of the three that the library has in the package.
             if [ ! -e "$lib/$name" ]; then
               echo "::error::$name is not in the package"
               exit 1
@@ -528,6 +533,11 @@ jobs:
           done
           if [ "$(dynamic RUNPATH "$mongoc")" != '$ORIGIN' ]; then
             echo "::error::$name does not look for libbson in its own directory (\$ORIGIN run path)"
+            exit 1
+          fi
+          links=$(find "pkg/$PKG" -type l)
+          if [ -n "$links" ]; then
+            echo "::error::Symbolic links in the package, which Windows tools do not extract: $(echo $links)"
             exit 1
           fi
 
@@ -566,14 +576,18 @@ jobs:
               --env BSON_LIB --env MONGOC_LIB --env MONGOC_VERSION --env "URI=$uri" \
               "$image" bash -euo pipefail -c '
                 bash /test/apt-install.sh libssl3t64 libsasl2-2
-                # Without LD_LIBRARY_PATH, as an application that loads libmongoc by its path: libbson
+                # Nothing registered yet, as for an application that loads libmongoc by its path: libbson
                 # has to come from the run path of libmongoc.
                 ldd "/pkg/lib/lib$MONGOC_LIB.so" | tee /tmp/ldd.txt
                 if grep -q "not found" /tmp/ldd.txt || ! grep -q "lib$BSON_LIB\.so.* => /pkg/lib/" /tmp/ldd.txt; then
                   echo "::error::libmongoc does not find its dependencies"
                   exit 1
                 fi
-                LD_LIBRARY_PATH=/pkg/lib /smoke/smoke "$MONGOC_VERSION" "$URI"'
+                # Then the directory registered with the dynamic linker, as in the README. ldconfig reports
+                # that the libraries are not symbolic links, and registers them all the same.
+                echo /pkg/lib > /etc/ld.so.conf.d/libmongoc.conf
+                ldconfig
+                /smoke/smoke "$MONGOC_VERSION" "$URI"'
           done
 
       - name: Archive
@@ -632,10 +646,9 @@ jobs:
           done
           mkdir ../libs
           for tarball in libmongoc-linux-*.tar.gz; do
-            tar -xzf "$tarball" -C ../libs --wildcards '*/lib/*.so*'
+            # Each library once, under its full version: its two other names are copies of the same file.
+            tar -xzf "$tarball" -C ../libs --wildcards '*/lib/*.so.*.*.*'
           done
-          # The libraries only: the .so and .so.<major> names are links to them.
-          find ../libs -type l -delete
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

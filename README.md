@@ -52,11 +52,14 @@ The CMake files are upstream's, with one change: they do not look for OpenSSL. A
 Distributions package the driver, but one branch at a time: Ubuntu 24.04 has 1.26, and Ubuntu 26.04 has 2.2 and no 1.x any more. The archive brings the current release of either branch to both:
 
 ```
-lib/        libmongoc-1.0.so.0, libbson-1.0.so.0   (2.x: libmongoc2.so.2, libbson2.so.2) and their unversioned links,
+lib/        libmongoc-1.0.so.0, libbson-1.0.so.0   (2.x: libmongoc2.so.2, libbson2.so.2), which applications load,
+            the same libraries under their two other names, for compilers and CMake,
             CMake and pkg-config files
 include/    libbson and libmongoc headers
 licenses/   mongo-c-driver and its bundled components
 ```
+
+An application only needs the two `.so.0` files (`.so.2` on 2.x). The other names of a library, such as `libmongoc-1.0.so` and `libmongoc-1.0.so.0.0.0`, are copies of the same file, where a Linux package has symbolic links: Windows tools do not extract those, and the archive has to survive a trip through Windows.
 
 Unlike the Windows packages, it contains no OpenSSL: the libraries use the OpenSSL 3, Cyrus SASL and zlib of the distribution, which keeps them on its security updates. Most installations already have them:
 
@@ -73,6 +76,8 @@ sudo tar -xzf libmongoc-linux-<version>-x64.tar.gz -C /opt
 echo /opt/libmongoc-linux-<version>-x64/lib | sudo tee /etc/ld.so.conf.d/libmongoc.conf
 sudo ldconfig
 ```
+
+`ldconfig` reports that the libraries are not symbolic links, and registers them all the same.
 
 The 1.x and 2.x libraries have different names, so one branch can be installed next to the other, including the one the distribution packages.
 
@@ -100,7 +105,7 @@ gh attestation verify libmongoc-1.0.so.0 --repo jamalofski/libmongoc-binaries
 5. It compiles a [smoke test](test/smoke.c) and runs it with only the package and Windows on the DLL search path, against a local `mongod` that requires TLS and a client certificate.
 6. It builds the smoke test once more [through the CMake files](test/CMakeLists.txt) of the package, with CMake forbidden to look for OpenSSL.
 
-The same workflow builds the Linux libraries on an `ubuntu-24.04` runner, from the same verified tarball and with the same options, except `ENABLE_SASL=CYRUS` and `ENABLE_ZLIB=SYSTEM`. They link to the OpenSSL of the system, and libmongoc gets an `$ORIGIN` run path. The workflow checks that they depend on nothing but glibc, OpenSSL 3, Cyrus SASL and zlib, then runs the smoke test in fresh `ubuntu:24.04` and `ubuntu:26.04` containers that only have these, against a `mongod` container that requires TLS and a client certificate.
+The same workflow builds the Linux libraries on an `ubuntu-24.04` runner, from the same verified tarball and with the same options, except `ENABLE_SASL=CYRUS` and `ENABLE_ZLIB=SYSTEM`. They link to the OpenSSL of the system, libmongoc gets an `$ORIGIN` run path, and the symbolic links of the install become plain files. The workflow checks that they depend on nothing but glibc, OpenSSL 3, Cyrus SASL and zlib, then runs the smoke test in fresh `ubuntu:24.04` and `ubuntu:26.04` containers that only have these, with the package registered through `ldconfig`, against a `mongod` container that requires TLS and a client certificate.
 
 [`check.yml`](.github/workflows/check.yml) looks for new upstream 1.x and 2.x releases every week and builds and publishes them the same way.
 
