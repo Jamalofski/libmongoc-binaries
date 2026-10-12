@@ -381,16 +381,16 @@ jobs:
           fi
           # libbson-1.0.so.0 and libmongoc-1.0.so.0 on 1.x, libbson2.so.2 and libmongoc2.so.2 on 2.x
           if [ "${BASH_REMATCH[1]}" = 1 ]; then
-            printf '%s\n' BSON_LIB=bson-1.0 MONGOC_LIB=mongoc-1.0 >> "$GITHUB_ENV"
+            printf '%s\n' BSON_LIB=bson-1.0 MONGOC_LIB=mongoc-1.0 MONGOC_PC=libmongoc-1.0 >> "$GITHUB_ENV"
           else
-            printf '%s\n' BSON_LIB=bson2 MONGOC_LIB=mongoc2 >> "$GITHUB_ENV"
+            printf '%s\n' BSON_LIB=bson2 MONGOC_LIB=mongoc2 MONGOC_PC=mongoc2 >> "$GITHUB_ENV"
           fi
 
       - name: Install the OpenSSL, Cyrus SASL and zlib headers
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libssl-dev libsasl2-dev zlib1g-dev
+          sudo apt-get install -y --no-install-recommends libssl-dev libsasl2-dev zlib1g-dev pkg-config
 
       - name: Download and verify mongo-c-driver ${{ inputs.mongoc-version }}
         run: |
@@ -442,6 +442,8 @@ jobs:
             exit 1
           fi
           cp "${notices[@]}" "$pkg/licenses/mongo-c-driver"
+          # The pkg-config files have the install prefix of this job, "stage": make them follow the package.
+          sed -i 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$pkg"/lib/pkgconfig/*.pc
           echo 'Installed by mongo-c-driver:'
           (cd stage && find . ! -type d | sort | sed 's|^\./|  |')
 
@@ -494,18 +496,11 @@ jobs:
           set -euo pipefail
           pkg="$PWD/pkg/$PKG"
           tls="$PWD/tls"
-          # include/libbson-1.0 on 1.x, include/bson-<version> on 2.x
-          includes=()
-          for header in bson/bson.h mongoc/mongoc.h; do
-            mapfile -t dirs < <(find "$pkg/include" -mindepth 1 -maxdepth 1 -type d -exec test -f "{}/$header" \; -print)
-            if [ "${#dirs[@]}" -ne 1 ]; then
-              echo "::error::Expected one include directory with $header"
-              exit 1
-            fi
-            includes+=("-I${dirs[0]}")
-          done
+          # Compiled through the pkg-config files of the package, which tests them as well.
+          flags=$(PKG_CONFIG_PATH="$pkg/lib/pkgconfig" pkg-config --cflags --libs "$MONGOC_PC")
+          echo "pkg-config $MONGOC_PC: $flags"
           mkdir smoke
-          cc -std=gnu11 -Wall "${includes[@]}" test/smoke.c -o smoke/smoke "-L$pkg/lib" "-l$MONGOC_LIB" "-l$BSON_LIB"
+          cc -std=gnu11 -Wall test/smoke.c -o smoke/smoke $flags
 
           # The runner image has no mongod: it runs from the official container image, on the host network.
           # A client certificate is required: tlsCAFile without tlsAllowConnectionsWithoutCertificates.

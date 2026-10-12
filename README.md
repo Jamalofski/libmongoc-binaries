@@ -74,7 +74,7 @@ sudo ldconfig
 
 The 1.x and 2.x libraries have different names, so one branch can be installed next to the other, including the one the distribution packages.
 
-For C and C++ projects, add the extracted folder to `CMAKE_PREFIX_PATH`.
+For C and C++ projects, add `lib/pkgconfig` to `PKG_CONFIG_PATH` and ask pkg-config for `libmongoc-1.0` (2.x: `mongoc2`).
 
 ## Verify a download
 
