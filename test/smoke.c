@@ -1,5 +1,5 @@
 /*
- * Smoke test for a libmongoc-windows package, Windows or Linux.
+ * Smoke test for a libmongoc-binaries package, Windows or Linux.
  *
  * Linking against the package and starting at all proves that libbson,
  * libmongoc and the OpenSSL libraries load. The program then checks the

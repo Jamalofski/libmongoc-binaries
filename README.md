@@ -1,4 +1,4 @@
-# libmongoc-windows
+# libmongoc-binaries
 
 Prebuilt binaries of the [MongoDB C Driver](https://github.com/mongodb/mongo-c-driver) (`libmongoc` and `libbson`), 1.x and 2.x: Windows DLLs for x64 and x86, built with MSVC and OpenSSL 3.5 LTS, and Linux shared libraries for x64.
 
@@ -17,7 +17,7 @@ The 1.x DLLs keep the `lib`-prefixed names that FireDAC looks for. Upstream drop
 
 ## Download
 
-Get the archive for your branch and platform from the [releases](https://github.com/jamalofski/libmongoc-windows/releases):
+Get the archive for your branch and platform from the [releases](https://github.com/jamalofski/libmongoc-binaries/releases):
 
 | File | For |
 | --- | --- |
@@ -82,9 +82,9 @@ Each release comes with a `SHA256SUMS` file and a [build provenance attestation]
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify libmongoc-windows-<version>-x64.zip --repo jamalofski/libmongoc-windows
-gh attestation verify mongoc2.dll --repo jamalofski/libmongoc-windows
-gh attestation verify libmongoc-1.0.so.0 --repo jamalofski/libmongoc-windows
+gh attestation verify libmongoc-windows-<version>-x64.zip --repo jamalofski/libmongoc-binaries
+gh attestation verify mongoc2.dll --repo jamalofski/libmongoc-binaries
+gh attestation verify libmongoc-1.0.so.0 --repo jamalofski/libmongoc-binaries
 ```
 
 ## How it is built

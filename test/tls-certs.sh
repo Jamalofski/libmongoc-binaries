@@ -9,7 +9,7 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
 mkdir tls && cd tls
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=libmongoc-windows test CA" \
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=libmongoc-binaries test CA" \
   -keyout ca.key -out ca.pem \
   -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
 issue() { # name, extended key usage, [subjectAltName]
