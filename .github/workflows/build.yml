@@ -63,8 +63,8 @@ jobs:
           echo "OpenSSL $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: build (${{ matrix.arch }})
+  windows:
+    name: windows (${{ matrix.arch }})
     needs: openssl
     runs-on: windows-2025
     timeout-minutes: 90
@@ -295,28 +295,7 @@ jobs:
 
       - name: Create TLS test certificates
         shell: bash
-        run: |
-          set -euo pipefail
-          export MSYS_NO_PATHCONV=1
-          mkdir tls && cd tls
-          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=libmongoc-windows test CA" \
-            -keyout ca.key -out ca.pem \
-            -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
-          issue() { # name, extended key usage, [subjectAltName]
-            openssl req -newkey rsa:2048 -nodes -subj "/CN=$1" -keyout "$1.key" -out "$1.csr"
-            {
-              echo "basicConstraints=CA:FALSE"
-              echo "keyUsage=critical,digitalSignature,keyEncipherment"
-              echo "extendedKeyUsage=$2"
-              if [ -n "${3:-}" ]; then echo "subjectAltName=$3"; fi
-            } > "$1.ext"
-            openssl x509 -req -in "$1.csr" -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -sha256 -extfile "$1.ext" -out "$1.crt"
-            # PKCS#1 key: mongod on Windows reads PEM through SChannel.
-            openssl pkey -in "$1.key" -traditional -out "$1.rsa.key"
-            cat "$1.crt" "$1.rsa.key" > "$1.pem"
-          }
-          issue server serverAuth "DNS:localhost,IP:127.0.0.1"
-          issue client clientAuth
+        run: bash test/tls-certs.sh
 
       - name: Smoke test (mutual TLS against mongod)
         run: |
@@ -381,8 +360,202 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  linux:
+    name: linux (x64)
+    # Ubuntu 24.04 is the oldest release the libraries are built for: they need its glibc or a later one.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PKG: libmongoc-linux-${{ inputs.mongoc-version }}-x64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the requested version
+        run: |
+          set -euo pipefail
+          if [[ ! "$MONGOC_VERSION" =~ ^([12])\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Expected a 1.x or 2.x version such as 1.30.12 or 2.5.5, got '$MONGOC_VERSION'"
+            exit 1
+          fi
+          # libbson-1.0.so.0 and libmongoc-1.0.so.0 on 1.x, libbson2.so.2 and libmongoc2.so.2 on 2.x
+          if [ "${BASH_REMATCH[1]}" = 1 ]; then
+            printf '%s\n' BSON_LIB=bson-1.0 MONGOC_LIB=mongoc-1.0 >> "$GITHUB_ENV"
+          else
+            printf '%s\n' BSON_LIB=bson2 MONGOC_LIB=mongoc2 >> "$GITHUB_ENV"
+          fi
+
+      - name: Install the OpenSSL, Cyrus SASL and zlib headers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libssl-dev libsasl2-dev zlib1g-dev
+
+      - name: Download and verify mongo-c-driver ${{ inputs.mongoc-version }}
+        run: |
+          set -euo pipefail
+          tarball="mongo-c-driver-$MONGOC_VERSION.tar.gz"
+          url="https://github.com/mongodb/mongo-c-driver/releases/download/$MONGOC_VERSION/$tarball"
+          curl -fsSL -o "$tarball" "$url"
+          curl -fsSL -o "$tarball.asc" "$url.asc"
+          export GNUPGHOME="$(mktemp -d)"
+          gpg --batch --quiet --import keys/mongo-c-driver.asc
+          gpg --batch --status-fd 1 --verify "$tarball.asc" "$tarball" > gpg-status.txt
+          grep -Eq "^\[GNUPG:\] VALIDSIG .*$MONGOC_SIGNING_KEY\$" gpg-status.txt
+          tar -xzf "$tarball"
+
+      - name: Build mongo-c-driver
+        run: |
+          set -euo pipefail
+          # OpenSSL, Cyrus SASL and zlib are those of the distribution, which keeps them up to date: nothing
+          # is bundled, unlike on Windows. The $ORIGIN run path makes libmongoc find libbson next to it,
+          # wherever the package is extracted.
+          cmake -S "mongo-c-driver-$MONGOC_VERSION" -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            '-DCMAKE_INSTALL_RPATH=$ORIGIN' \
+            -DENABLE_SSL=OPENSSL \
+            -DENABLE_SASL=CYRUS \
+            -DENABLE_SRV=ON \
+            -DENABLE_ZLIB=SYSTEM \
+            -DENABLE_SNAPPY=OFF \
+            -DENABLE_ZSTD=OFF \
+            -DENABLE_CLIENT_SIDE_ENCRYPTION=OFF \
+            -DENABLE_MONGODB_AWS_AUTH=ON \
+            -DENABLE_STATIC=OFF \
+            -DENABLE_TESTS=OFF \
+            -DENABLE_EXAMPLES=OFF \
+            -DENABLE_UNINSTALL=OFF
+          cmake --build build
+          cmake --install build --prefix stage --strip
+
+      - name: Assemble the package
+        run: |
+          set -euo pipefail
+          pkg="pkg/$PKG"
+          mkdir -p "$pkg/licenses/mongo-c-driver"
+          cp -a stage/include stage/lib "$pkg"
+          # share/mongo-c-driver on 1.x, share/mongo-c-driver/<version> on 2.x
+          mapfile -t notices < <(find stage/share/mongo-c-driver -name COPYING -o -name THIRD_PARTY_NOTICES)
+          if [ "${#notices[@]}" -ne 2 ]; then
+            echo "::error::COPYING and THIRD_PARTY_NOTICES not found in the mongo-c-driver install"
+            exit 1
+          fi
+          cp "${notices[@]}" "$pkg/licenses/mongo-c-driver"
+          echo 'Installed by mongo-c-driver:'
+          (cd stage && find . ! -type d | sort | sed 's|^\./|  |')
+
+      - name: Check the package
+        run: |
+          set -euo pipefail
+          lib="pkg/$PKG/lib"
+          bson="$lib/lib$BSON_LIB.so"
+          mongoc="$lib/lib$MONGOC_LIB.so"
+          dynamic() { readelf -d "$2" | sed -n "s/.*($1).*\[\(.*\)\]/\1/p"; }
+          # What the libraries may load from the system: glibc, OpenSSL 3, Cyrus SASL and zlib.
+          system='ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libresolv.so.2 libssl.so.3 libcrypto.so.3 libsasl2.so.2 libz.so.1'
+          for file in "$bson" "$mongoc"; do
+            name=$(dynamic SONAME "$file")
+            deps=$(dynamic NEEDED "$file" | xargs)
+            echo "$name -> $deps"
+            if [ "$(readelf -h "$file" | sed -n 's/^ *Machine: *//p')" != 'Advanced Micro Devices X86-64' ]; then
+              echo "::error::$name is not an x86-64 library"
+              exit 1
+            fi
+            # The dynamic linker looks for this name, which is a link to the library.
+            if [ ! -e "$lib/$name" ]; then
+              echo "::error::$name is not in the package"
+              exit 1
+            fi
+            for dep in $deps; do
+              if [[ " $system $(dynamic SONAME "$bson") " != *" $dep "* ]]; then
+                echo "::error::$name depends on $dep, which is neither in the package nor expected on the system"
+                exit 1
+              fi
+            done
+          done
+          # $name and $deps are now those of libmongoc.
+          for required in "$(dynamic SONAME "$bson")" libssl.so.3 libcrypto.so.3; do
+            if [[ " $deps " != *" $required "* ]]; then
+              echo "::error::$name does not load $required"
+              exit 1
+            fi
+          done
+          if [ "$(dynamic RUNPATH "$mongoc")" != '$ORIGIN' ]; then
+            echo "::error::$name does not look for libbson in its own directory (\$ORIGIN run path)"
+            exit 1
+          fi
+
+      - name: Create TLS test certificates
+        run: bash test/tls-certs.sh
+
+      - name: Smoke test (mutual TLS against mongod, on Ubuntu 24.04 and 26.04)
+        run: |
+          set -euo pipefail
+          pkg="$PWD/pkg/$PKG"
+          tls="$PWD/tls"
+          # include/libbson-1.0 on 1.x, include/bson-<version> on 2.x
+          includes=()
+          for header in bson/bson.h mongoc/mongoc.h; do
+            mapfile -t dirs < <(find "$pkg/include" -mindepth 1 -maxdepth 1 -type d -exec test -f "{}/$header" \; -print)
+            if [ "${#dirs[@]}" -ne 1 ]; then
+              echo "::error::Expected one include directory with $header"
+              exit 1
+            fi
+            includes+=("-I${dirs[0]}")
+          done
+          mkdir smoke
+          cc -std=gnu11 -Wall "${includes[@]}" test/smoke.c -o smoke/smoke "-L$pkg/lib" "-l$MONGOC_LIB" "-l$BSON_LIB"
+
+          # The runner image has no mongod: it runs from the official container image, on the host network.
+          # A client certificate is required: tlsCAFile without tlsAllowConnectionsWithoutCertificates.
+          docker run --detach --name mongod --network host --volume "$tls:/tls:ro" mongo:8.0 \
+            --port 27018 --bind_ip 127.0.0.1 --tlsMode requireTLS \
+            --tlsCertificateKeyFile /tls/server.pem --tlsCAFile /tls/ca.pem > /dev/null
+          trap 'status=$?; if [ "$status" -ne 0 ]; then docker logs --tail 40 mongod; fi; docker rm --force mongod > /dev/null' EXIT
+          if ! timeout 60 bash -c 'until (: < /dev/tcp/127.0.0.1/27018) 2> /dev/null; do sleep 1; done'; then
+            echo "::error::mongod did not start"
+            exit 1
+          fi
+
+          # Fresh images with only the packages the README asks for: the package has to be self-contained.
+          uri="mongodb://127.0.0.1:27018/?tls=true&tlsCAFile=/tls/ca.pem&tlsCertificateKeyFile=/tls/client.pem&serverSelectionTimeoutMS=20000"
+          for image in ubuntu:24.04 ubuntu:26.04; do
+            echo "$image"
+            docker run --rm --network host \
+              --volume "$pkg:/pkg:ro" --volume "$PWD/smoke:/smoke:ro" --volume "$tls:/tls:ro" \
+              --env DEBIAN_FRONTEND=noninteractive --env BSON_LIB --env MONGOC_LIB --env MONGOC_VERSION --env "URI=$uri" \
+              "$image" bash -euo pipefail -c '
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends libssl3t64 libsasl2-2 > /dev/null
+                # Without LD_LIBRARY_PATH, as an application that loads libmongoc by its path: libbson
+                # has to come from the run path of libmongoc.
+                ldd "/pkg/lib/lib$MONGOC_LIB.so" | tee /tmp/ldd.txt
+                if grep -q "not found" /tmp/ldd.txt || ! grep -q "lib$BSON_LIB\.so.* => /pkg/lib/" /tmp/ldd.txt; then
+                  echo "::error::libmongoc does not find its dependencies"
+                  exit 1
+                fi
+                LD_LIBRARY_PATH=/pkg/lib /smoke/smoke "$MONGOC_VERSION" "$URI"'
+          done
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          mkdir dist
+          tar -C pkg --owner=0 --group=0 --numeric-owner -czf "dist/$PKG.tar.gz" "$PKG"
+          echo "GCC $(gcc -dumpfullversion), $(getconf GNU_LIBC_VERSION), GitHub runner image $ImageOS $ImageVersion" \
+            > dist/toolchain-linux-x64.txt
+          cat dist/toolchain-linux-x64.txt
+          ls -l dist
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PKG }}
+          path: dist/
+          if-no-files-found: error
+
   release:
-    needs: [openssl, build]
+    needs: [openssl, windows, linux]
     if: inputs.publish
     runs-on: ubuntu-latest
     permissions:
@@ -405,7 +578,7 @@ jobs:
       # Only this version: the weekly check builds 1.x and 2.x in the same workflow run.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: libmongoc-windows-${{ inputs.mongoc-version }}-*
+          pattern: libmongoc-*-${{ inputs.mongoc-version }}-*
           path: dist
           merge-multiple: true
 
@@ -413,18 +586,26 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum libmongoc-windows-*.zip > SHA256SUMS
+          sha256sum libmongoc-windows-*.zip libmongoc-linux-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
           for zip in libmongoc-windows-*.zip; do
             name="${zip%.zip}"
             unzip -q "$zip" "$name/bin/*.dll" -d ../dlls
           done
+          mkdir ../libs
+          for tarball in libmongoc-linux-*.tar.gz; do
+            tar -xzf "$tarball" -C ../libs --wildcards '*/lib/*.so*'
+          done
+          # The libraries only: the .so and .so.<major> names are links to them.
+          find ../libs -type l -delete
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/libmongoc-windows-*.zip
+            dist/libmongoc-linux-*.tar.gz
             dlls/**/*.dll
+            libs/**/*.so.*
 
       - name: Publish the release
         run: |
@@ -433,24 +614,34 @@ jobs:
           if [[ "$MONGOC_VERSION" == 1.* ]]; then
             latest=false
             dlls='`libmongoc-1.0.dll` and `libbson-1.0.dll`, the lib-prefixed names that Delphi FireDAC loads'
+            libs='`libmongoc-1.0.so.0` and `libbson-1.0.so.0`'
           else
             latest=true
             dlls='`mongoc2.dll` and `bson2.dll`'
+            libs='`libmongoc2.so.2` and `libbson2.so.2`'
           fi
           {
-            echo "Unofficial Windows build of [mongo-c-driver $MONGOC_VERSION](https://github.com/mongodb/mongo-c-driver/releases/tag/$MONGOC_VERSION), for x64 and x86."
+            echo "Unofficial Windows and Linux builds of [mongo-c-driver $MONGOC_VERSION](https://github.com/mongodb/mongo-c-driver/releases/tag/$MONGOC_VERSION)."
+            echo
+            echo "**Windows**, x64 and x86: copy the DLLs from \`bin/\` next to your executable."
             echo
             echo "- DLLs: $dlls"
             echo "- OpenSSL $OPENSSL_VERSION"
             echo "- $(cat dist/toolchain-x64.txt)"
             echo
-            echo "Copy the DLLs from \`bin/\` next to your executable. The [README](https://github.com/$GITHUB_REPOSITORY#readme) lists the requirements and how to verify the files:"
+            echo "**Linux**, x64, Ubuntu 24.04 and later: extract the archive and load the libraries from \`lib/\`."
+            echo
+            echo "- Libraries: $libs"
+            echo "- OpenSSL 3, Cyrus SASL and zlib from the distribution"
+            echo "- $(cat dist/toolchain-linux-x64.txt)"
+            echo
+            echo "The [README](https://github.com/$GITHUB_REPOSITORY#readme) lists the requirements and how to verify the files:"
             echo
             echo '```sh'
             echo 'sha256sum -c SHA256SUMS'
             echo "gh attestation verify libmongoc-windows-$MONGOC_VERSION-x64.zip --repo $GITHUB_REPOSITORY"
             echo '```'
           } > notes.md
-          gh release create "$TAG" dist/libmongoc-windows-*.zip dist/SHA256SUMS \
+          gh release create "$TAG" dist/libmongoc-windows-*.zip dist/libmongoc-linux-*.tar.gz dist/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest="$latest" \
             --title "libmongoc $MONGOC_VERSION" --notes-file notes.md

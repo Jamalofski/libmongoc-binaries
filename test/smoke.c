@@ -1,11 +1,11 @@
 /*
- * Smoke test for a libmongoc-windows package.
+ * Smoke test for a libmongoc-windows package, Windows or Linux.
  *
- * Linking against the import libraries and starting at all proves that
- * libbson, libmongoc and the OpenSSL DLLs load from the package. The program
- * then checks the versions the DLLs report, round-trips a document through
- * extended JSON and, given a URI, runs "buildInfo" against a server (the CI
- * uses mutual TLS, so OpenSSL loads both the CA and a client certificate).
+ * Linking against the package and starting at all proves that libbson,
+ * libmongoc and the OpenSSL libraries load. The program then checks the
+ * versions the libraries report, round-trips a document through extended JSON
+ * and, given a URI, runs "buildInfo" against a server (the CI uses mutual
+ * TLS, so OpenSSL loads both the CA and a client certificate).
  *
  * Usage: smoke <expected-version> [<mongodb-uri>]
  */
@@ -18,8 +18,11 @@
 #ifndef MONGOC_ENABLE_SSL_OPENSSL
 #error "libmongoc must be built with ENABLE_SSL=OPENSSL"
 #endif
-#ifndef MONGOC_ENABLE_SASL_SSPI
+#if defined(_WIN32) && !defined(MONGOC_ENABLE_SASL_SSPI)
 #error "libmongoc must be built with ENABLE_SASL=SSPI"
+#endif
+#if !defined(_WIN32) && !defined(MONGOC_ENABLE_SASL_CYRUS)
+#error "libmongoc must be built with ENABLE_SASL=CYRUS"
 #endif
 
 static int
