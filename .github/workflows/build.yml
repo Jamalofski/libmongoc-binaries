@@ -556,8 +556,10 @@ jobs:
           cc -std=gnu11 -Wall test/smoke.c -o smoke/smoke $flags
 
           # The runner image has no mongod: it runs from the official container image, on the host network.
+          # MongoDB 7.0: 8.0 and later refuse to start on the Linux 7.0 kernel of the runner image
+          # (SERVER-121912, SERVER-136848), and a client smoke test does not need a newer server.
           # A client certificate is required: tlsCAFile without tlsAllowConnectionsWithoutCertificates.
-          docker run --detach --name mongod --network host --volume "$tls:/tls:ro" mongo:8.0 \
+          docker run --detach --name mongod --network host --volume "$tls:/tls:ro" mongo:7.0 \
             --port 27018 --bind_ip 127.0.0.1 --tlsMode requireTLS \
             --tlsCertificateKeyFile /tls/server.pem --tlsCAFile /tls/ca.pem > /dev/null
           trap 'status=$?; if [ "$status" -ne 0 ]; then docker logs --tail 40 mongod; fi; docker rm --force mongod > /dev/null' EXIT
