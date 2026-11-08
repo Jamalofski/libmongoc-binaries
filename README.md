@@ -47,6 +47,22 @@ For C and C++ projects, add the two directories under `include/` to the include 
 
 The CMake files are upstream's, with one change: they do not look for OpenSSL. As upstream writes them, every project that links the driver must also find the OpenSSL headers and import libraries, which a program that only loads the DLLs does not use and which the package does not contain. A project that calls OpenSSL itself brings its own.
 
+### Delphi FireDAC and MongoDB Atlas
+
+Atlas only accepts TLS connections, and the `libmongoc-1.0.dll` and `libbson-1.0.dll` that ship with RAD Studio are [built without SSL support](https://docwiki.embarcadero.com/RADStudio/Florence/en/Connect_to_MongoDB_Database_%28FireDAC%29). With the 1.x DLLs from this repository and Delphi 12.3 or later, which added the `UseSRV` parameter:
+
+```ini
+DriverID=Mongo
+Server=cluster0.abcde.mongodb.net
+UseSRV=True
+UseSSL=True
+User_Name=...
+Password=...
+Database=...
+```
+
+`Server` takes the host name from the Atlas connection string, without `mongodb+srv://`, credentials or port. Atlas does not use client certificates, and without a CA file the driver checks the server certificate against the Windows certificate store. Also add the client's public IP address to the IP access list of the Atlas project.
+
 ## Linux
 
 Distributions package the driver, but one branch at a time: Ubuntu 24.04 has 1.26, and Ubuntu 26.04 has 2.2 and no 1.x any more. The archive brings the current release of either branch to both:
